@@ -60,7 +60,7 @@ def recall(
     mode: str = "hybrid",
     kind: str = "fact",
     category: str = "",
-    workspace: str = "",
+    read_buckets: list[str] | None = None,
     user_id: str = "",
     limit: int = 10,
     reranker_type: str = "rrf",
@@ -77,7 +77,7 @@ def recall(
     kind = kind if kind in {"fact", "turn", "any"} else "fact"
     limit = _limit(limit, 10)
 
-    where = build_filter(workspace=workspace, user_id=user_id, kind=kind, category=category)
+    where = build_filter(read_buckets=read_buckets, user_id=user_id, kind=kind, category=category)
     table = store.table
 
     if mode == "vector":
@@ -140,7 +140,7 @@ def recall(
                 mode="vector",
                 kind=kind,
                 category=category,
-                workspace=workspace,
+                read_buckets=read_buckets,
                 user_id=user_id,
                 limit=limit,
                 reranker_type="rrf",
@@ -161,3 +161,25 @@ def format_prefetch(rows: list[dict[str, Any]], *, max_items: int = 5) -> str:
         category = row.get("category") or row.get("kind") or "memory"
         lines.append(f"- ({category}, id={row.get('id')}) {content}")
     return "\n".join(lines)
+
+
+def _norm_content(content: Any) -> str:
+    return " ".join(str(content or "").strip().lower().split())
+
+
+def collapse_near_dups(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Drop near-duplicate rows across a read-union, keeping the highest-score copy.
+
+    The same fact can exist in two of the caller's read buckets (written by two
+    profiles); a union recall would return both. We collapse by normalized
+    content and keep the row with the best score (first wins ties).
+    """
+    best: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        key = _norm_content(row.get("content"))
+        if not key:
+            continue
+        cur = best.get(key)
+        if cur is None or float(row.get("_relevance_score", 0) or 0) > float(cur.get("_relevance_score", 0) or 0):
+            best[key] = row
+    return list(best.values())
