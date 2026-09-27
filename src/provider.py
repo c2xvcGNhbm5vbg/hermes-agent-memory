@@ -19,6 +19,7 @@ from .store import (
     utc_now,
 )
 from .tools import TOOL_SCHEMAS, LanceDBToolDispatcher
+from .workspaces import resolve_workspace
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,8 @@ class LanceDBMemoryProvider(MemoryProvider):
         self._platform: str = ""
         self._agent_context: str = "primary"
         self._agent_identity: str = ""
-        self._agent_workspace: str = ""
+        self._write_bucket: str = ""
+        self._read_buckets: list[str] = []
         self._user_id: str = ""
         self._message_index: int = 0
         self._initialized: bool = False
@@ -88,7 +90,7 @@ class LanceDBMemoryProvider(MemoryProvider):
         self._platform = str(kwargs.get("platform") or "")
         self._agent_context = str(kwargs.get("agent_context") or "primary")
         self._agent_identity = str(kwargs.get("agent_identity") or "")
-        self._agent_workspace = str(kwargs.get("agent_workspace") or "")
+        self._write_bucket, self._read_buckets = resolve_workspace(self._agent_identity, self._config)
         self._user_id = str(kwargs.get("user_id") or "")
         self._message_index = 0
         self.store.start_worker()
@@ -173,10 +175,9 @@ class LanceDBMemoryProvider(MemoryProvider):
         self._session_id = new_session_id
         if reset:
             self._message_index = 0
-        if kwargs.get("agent_workspace") is not None:
-            self._agent_workspace = str(kwargs.get("agent_workspace") or "")
         if kwargs.get("agent_identity") is not None:
             self._agent_identity = str(kwargs.get("agent_identity") or "")
+            self._write_bucket, self._read_buckets = resolve_workspace(self._agent_identity, self._config)
         if kwargs.get("user_id") is not None:
             self._user_id = str(kwargs.get("user_id") or "")
 
@@ -198,7 +199,7 @@ class LanceDBMemoryProvider(MemoryProvider):
             provenance_turn_ids=[],
             source="memory_write_mirror",
         )
-        if self.store.find_by_hash(row["content_hash"], workspace=self._agent_workspace, kind="fact"):
+        if self.store.find_by_hash(row["content_hash"], workspace=self._write_bucket, kind="fact"):
             return
         self.store.enqueue(row)
 
@@ -297,7 +298,7 @@ class LanceDBMemoryProvider(MemoryProvider):
             mode=mode or retrieval_cfg.get("mode", "hybrid"),
             kind=kind,
             category=category,
-            workspace=self._agent_workspace,
+            read_buckets=self._read_buckets,
             user_id=self._user_id,
             limit=limit or retrieval_cfg.get("top_k", 10),
             reranker_type=reranker_type,
@@ -330,11 +331,11 @@ class LanceDBMemoryProvider(MemoryProvider):
             "role": "",
             "user_id": self._user_id,
             "agent_identity": self._agent_identity,
-            "agent_workspace": self._agent_workspace,
+            "agent_workspace": self._write_bucket,
             "platform": self._platform,
             "source": source,
             "created_at": utc_now(),
-            "content_hash": content_hash(content, workspace=self._agent_workspace, kind="fact"),
+            "content_hash": content_hash(content, workspace=self._write_bucket, kind="fact"),
         }
 
     def _build_turn_row(self, role: str, content: str, session_id: str) -> Dict[str, Any]:
@@ -353,11 +354,11 @@ class LanceDBMemoryProvider(MemoryProvider):
             "role": role,
             "user_id": self._user_id,
             "agent_identity": self._agent_identity,
-            "agent_workspace": self._agent_workspace,
+            "agent_workspace": self._write_bucket,
             "platform": self._platform,
             "source": "sync_turn",
             "created_at": utc_now(),
-            "content_hash": content_hash(content, workspace=self._agent_workspace, kind="turn"),
+            "content_hash": content_hash(content, workspace=self._write_bucket, kind="turn"),
         }
 
     def _extract_and_store(self, messages: List[Dict[str, Any]], *, source: str) -> list[dict[str, Any]]:
@@ -379,7 +380,7 @@ class LanceDBMemoryProvider(MemoryProvider):
                 provenance_turn_ids=provenance_ids,
                 source=source,
             )
-            if self.store.find_by_hash(row["content_hash"], workspace=self._agent_workspace, kind="fact"):
+            if self.store.find_by_hash(row["content_hash"], workspace=self._write_bucket, kind="fact"):
                 continue
             self.store.add_row(row)
             inserted.append(row)
@@ -403,7 +404,7 @@ class LanceDBMemoryProvider(MemoryProvider):
             "session_id": self._session_id,
             "platform": self._platform,
             "agent_identity": self._agent_identity,
-            "agent_workspace": self._agent_workspace,
+            "agent_workspace": self._write_bucket,
             "user_id": self._user_id,
         }
 
