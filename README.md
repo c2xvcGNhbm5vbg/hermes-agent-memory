@@ -267,6 +267,18 @@ Add a new bucket by referencing it in a profile's `write`/`read` — no code cha
 
 `scripts/migrate_workspaces.py` rewrites the `agent_workspace` column of existing rows (LanceDB has no in-place UPDATE, so it deletes and re-adds each matching row with the new value and a recomputed content hash). Default mapping: `"" -> shared`, `"hermes" -> shared`. It is idempotent and supports `--dry-run`.
 
+### Shared store across profiles (`store_path`)
+
+By default each profile has its own store — `~/.hermes/lancedb` for the default profile, `~/.hermes/profiles/<name>/lancedb` for named profiles. So the bucket model above only works *within* a profile: a `read: all` union sees only that profile's own table.
+
+To make all profiles read/write the **same** database (so shared buckets and read-unions actually work across profiles), set `plugins.lancedb.store_path` to a shared path; `~` is expanded. Empty (the default) keeps the per-profile behavior — fully backward compatible. The bucket logic (write bucket / read-union) is unchanged — it now operates on one shared table, which is what it was designed for.
+
+```yaml
+plugins:
+  lancedb:
+    store_path: ~/.hermes/lancedb   # all profiles share this store
+```
+
 ---
 
 ## Configuration reference
