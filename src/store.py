@@ -79,16 +79,24 @@ def quote_sql(value: str) -> str:
 
 def build_filter(
     *,
-    workspace: str = "",
+    read_buckets: list[str] | None = None,
     user_id: str = "",
     kind: str = "fact",
     category: str = "",
 ) -> str:
+    """Build a SQL where-clause for recall.
+
+    ``read_buckets``: the set of buckets this caller may read. ``None`` or
+    ``[]`` -> no workspace clause (see everything). A non-empty list -> an
+    ``IN (...)`` clause. (The old single-``workspace`` parameter is gone; all
+    call sites pass ``read_buckets``.)
+    """
     clauses: list[str] = []
     if kind and kind != "any":
         clauses.append(f"kind = {quote_sql(kind)}")
-    if workspace:
-        clauses.append(f"agent_workspace = {quote_sql(workspace)}")
+    if read_buckets:
+        values = ", ".join(quote_sql(b) for b in read_buckets)
+        clauses.append(f"agent_workspace IN ({values})")
     if user_id:
         clauses.append(f"(user_id = {quote_sql(user_id)} OR user_id = '')")
     if category:
