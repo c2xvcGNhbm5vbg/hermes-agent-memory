@@ -104,6 +104,31 @@ def build_filter(
     return " AND ".join(clauses)
 
 
+class _VectorIndexTableWrapper:
+    """Transparent wrapper around a LanceTable.
+
+    Forwards every attribute to the underlying table, and after each ``add``
+    (the path rows first land in a fresh table) triggers the idempotent IVF_PQ
+    index build. The index cannot be created while the table is empty (lance:
+    "Creating empty vector indices with train=False is not yet implemented"),
+    so building it in ``open()`` alone is a no-op on a fresh store; building it
+    after the first add is what actually creates it. The build is guarded by
+    ``list_indices()`` inside ``_ensure_vector_index`` so it runs only once.
+    """
+
+    def __init__(self, store: "LanceDBStore", table) -> None:
+        self._store = store
+        self._table = table
+
+    def add(self, *args, **kwargs):
+        result = self._table.add(*args, **kwargs)
+        self._store._ensure_vector_index()
+        return result
+
+    def __getattr__(self, name):
+        return getattr(self._table, name)
+
+
 class LanceDBStore:
     """Small synchronous store plus optional background writer queue."""
 
@@ -113,6 +138,7 @@ class LanceDBStore:
         embedder: OpenAICompatibleEmbedder,
         *,
         store_path: str = "",
+        vector_index_enabled: bool = True,
         optimize_every_commits: int = 50,
         cleanup_older_than_days: int = 7,
         maintenance_enabled: bool = True,
@@ -127,6 +153,7 @@ class LanceDBStore:
         self._worker: threading.Thread | None = None
         self._closed = threading.Event()
         self._maintenance_enabled = bool(maintenance_enabled)
+        self._vector_index_enabled = vector_index_enabled
         self._optimize_every = max(0, int(optimize_every_commits))
         self._cleanup_older_than = (
             timedelta(days=int(cleanup_older_than_days))
@@ -151,10 +178,11 @@ class LanceDBStore:
         self._db = lancedb.connect(str(self.db_path))
         existed = True
         try:
-            self._table = self._db.open_table(TABLE_NAME)
+            table = self._db.open_table(TABLE_NAME)
         except Exception:
             existed = False
-            self._table = self._db.create_table(TABLE_NAME, schema=self._schema())
+            table = self._db.create_table(TABLE_NAME, schema=self._schema())
+        self._table = _VectorIndexTableWrapper(self, table)
         # Guard an existing table against an embedder whose dim no longer matches
         # the stored vector column (e.g. the user switched embedding model). Done
         # outside the open/create try so the mismatch error isn't swallowed into
@@ -162,6 +190,7 @@ class LanceDBStore:
         if existed:
             self._check_embedding_dim()
         self._ensure_fts_index()
+        self._ensure_vector_index()
 
     def _check_embedding_dim(self) -> None:
         stored = self._table_vector_dim()
@@ -222,6 +251,31 @@ class LanceDBStore:
             self._table.create_fts_index("content")
         except Exception as exc:
             logger.debug("create_fts_index skipped or failed: %s", exc)
+
+    def _ensure_vector_index(self) -> None:
+        """Build an IVF_PQ index on the vector column so the vector leg of
+        hybrid recall is an indexed search (flat ~ms) instead of a brute-force
+        scan (linear in row count). No-op if already indexed or disabled."""
+        if not self._vector_index_enabled:
+            return
+        try:
+            existing = [c.index_type for c in self._table.list_indices()]
+            if "IvfPq" in existing:
+                return
+            # lancedb 0.39's new ``config=IvfPq(...)`` API dispatches to the
+            # underlying lance dataset with train=False, which fails with
+            # "Creating empty vector indices with train=False is not yet
+            # implemented". The legacy metric/vector_column_name call trains the
+            # index and yields an IvfPq index, so use that.
+            self._table.create_index(
+                "l2",
+                num_partitions=256,
+                num_sub_vectors=16,
+                vector_column_name="vector",
+            )
+            logger.info("lancedb IVF_PQ vector index built")
+        except Exception as exc:
+            logger.warning("lancedb vector index skipped/failed: %s", exc)
 
     def start_worker(self) -> None:
         self.open()
