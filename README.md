@@ -279,6 +279,10 @@ plugins:
     store_path: ~/.hermes/lancedb   # all profiles share this store
 ```
 
+### Performance / vector index
+
+Without an index, the vector leg of recall is a brute-force scan of every row (linear in row count — measured ~3 ms @ 1k rows, ~380 ms @ 100k, ~2 s @ 500k). The plugin builds an IVF_PQ index on the `vector` column at first open (built once, guarded by `list_indices()`), so vector recall stays ~ms at any scale. Set `plugins.lancedb.vector_index_enabled: false` to disable the index and fall back to the brute-force scan.
+
 ---
 
 ## Configuration reference
