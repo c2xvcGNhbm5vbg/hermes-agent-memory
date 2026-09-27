@@ -4,6 +4,14 @@ LanceDB-backed memory provider plugin for [Hermes Agent](https://github.com/Nous
 
 Embeds a workspace-scoped LanceDB table at `~/.hermes/lancedb/memories.lance` and exposes four tools to the agent: `lancedb_recall`, `lancedb_remember`, `lancedb_read`, `lancedb_forget`. Recall defaults to pure vector ANN over OpenAI embeddings, with an optional hybrid mode (vector + BM25, fused via RRF / linear / cross-encoder) per call or via config. Durable facts are extracted from sessions at pre-compress and session end. The memory store runs entirely in Hermes's Python process — no external memory service, no server (embeddings call your configured embeddings API).
 
+## What this fork adds
+
+This fork (`c2xvcGNhbm5vbg/hermes-agent-memory`) carries a few changes on top of upstream `lancedb/hermes-agent-memory`:
+
+- **Dependency floors relaxed to match Hermes core pins** — `openai>=2.24.0`, `requests>=2.31`, `botocore>=1.31.57`. Upstream's stricter floors made the plugin unresolvable against Hermes core's pins, so plugin management auto-disabled it.
+- **Extraction fix** — the automatic session-end / pre-compress fact extraction now passes `response_format` via `extra_body` (Hermes' `call_llm()` has no top-level `response_format` kwarg) and parses the response with the same helper the rest of Hermes uses. Previously the extraction call raised a `TypeError` that a broad `except` silently swallowed, so automatic extraction never ran.
+- **Profile workspace buckets** — memory is scoped into named *buckets* per Hermes profile: each profile writes to one bucket and reads a union of buckets, so e.g. coding profiles can share a `dev` bucket while the default profile reads everything. See [Workspaces (profile buckets)](#workspaces-profile-buckets).
+
 > **Just want to install it?** Jump straight to **[Installation (users)](#installation-users)** — about five minutes, and you can try it in an isolated profile that won't touch your existing Hermes setup.
 
 ## Features
@@ -213,6 +221,51 @@ Fusion only applies to `hybrid` mode and is config-only — the agent picks the 
 4. Return the top `top_k` rows.
 
 Two details: `vector` projects its score column, but `hybrid` fetches unprojected and drops the `vector` column in Python (naming `_relevance_score` in `select()` errors — it pushes down to the FTS leg). And if hybrid fails (e.g. the full-text leg's index isn't ready), recall logs a warning and falls back to pure vector.
+
+---
+
+## Workspaces (profile buckets)
+
+Every row carries an `agent_workspace` tag. Upstream, recall pre-filters by a single workspace value (empty = see everything). This fork adds a **profile→bucket model** on top:
+
+- **Write bucket** — each profile writes its facts/turns to exactly one named bucket (its `write`).
+- **Read union** — recall is filtered by `agent_workspace IN (read buckets)`. `read: all` means *no* workspace filter — the profile sees every bucket.
+- **Emergent buckets** — no bucket names are hardcoded in the code; a bucket exists only when a profile's `write`/`read` references it.
+- **Inheritance** — profiles not in the map inherit the `default` profile's entry; if `default` itself is unmapped, the fallback is no scoping (legacy behavior).
+- **Dedupe** — the content hash includes the write bucket, so the same fact in two buckets is two rows; recall collapses near-duplicates across a read-union (keeps the highest-score copy).
+- **Escape hatch** — `workspaces.enabled: false` restores the legacy no-filter behavior.
+
+The bucket comes from the **profile** the agent runs under (Hermes passes the profile name to the plugin as `agent_identity`). It is *not* the shell working directory — launching Hermes in different directories does not change the bucket.
+
+### Config
+
+Add under `plugins.lancedb` in `~/.hermes/config.yaml` (defaults live in `src/default_config.yaml`; `enabled` defaults to `false` so a fresh install is unaffected until you opt in):
+
+```yaml
+plugins:
+  lancedb:
+    workspaces:
+      enabled: true
+      profiles:
+        default:
+          write: shared
+          read: all        # no filter — sees every bucket
+        ops:
+          write: dev
+          read: [dev, shared]
+        critic:
+          write: dev
+          read: [dev, shared]
+        orchestrator:
+          write: dev
+          read: [dev, shared]
+```
+
+Add a new bucket by referencing it in a profile's `write`/`read` — no code change, no separate "create bucket" step.
+
+### Migrating an existing store
+
+`scripts/migrate_workspaces.py` rewrites the `agent_workspace` column of existing rows (LanceDB has no in-place UPDATE, so it deletes and re-adds each matching row with the new value and a recomputed content hash). Default mapping: `"" -> shared`, `"hermes" -> shared`. It is idempotent and supports `--dry-run`.
 
 ---
 
