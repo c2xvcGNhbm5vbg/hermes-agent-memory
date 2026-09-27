@@ -14,6 +14,7 @@ This fork (`c2xvcGNhbm5vbg/hermes-agent-memory`) carries a few changes on top of
 - **Shared store across profiles (`store_path`)** — by default each profile has its *own* LanceDB store, so buckets only worked within a single profile. `plugins.lancedb.store_path` points every profile at one shared store, which is what makes cross-profile shared buckets and read-unions work. Empty (the default) keeps the per-profile behavior — fully backward compatible. See [Shared store across profiles](#shared-store-across-profiles-store_path).
 - **IVF_PQ vector index** — the vector leg of recall is indexed (built once, ~ms at any scale) instead of a brute-force scan of every row (linear in row count). Disable with `vector_index_enabled: false`. See [Performance / vector index](#performance--vector-index).
 - **Resilient writer thread** — a failed write batch is logged and dropped instead of killing the background writer thread. Previously one failed batch (e.g. an embedder 500) killed the thread and *all* subsequent memory writes were silently dropped until the Hermes process restarted.
+- **Configurable prefetch caps** — the memory block auto-injected at the start of each turn was hard-capped at 5 items / 500 chars per row. Both are now user-configurable via `plugins.lancedb.prefetch` (defaults 5 / 500, backward compatible).
 
 > **Just want to install it?** Jump straight to **[Installation (users)](#installation-users)** — about five minutes, and you can try it in an isolated profile that won't touch your existing Hermes setup.
 
