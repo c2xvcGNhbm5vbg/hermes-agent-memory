@@ -60,3 +60,7 @@ plugins:
       enabled: true             # background optimize() of the Lance table
       optimize_every_commits: 50
       cleanup_older_than_days: 7
+
+    workspaces:
+      enabled: false
+      profiles: {}
