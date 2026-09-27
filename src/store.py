@@ -112,12 +112,14 @@ class LanceDBStore:
         hermes_home: str | Path,
         embedder: OpenAICompatibleEmbedder,
         *,
+        store_path: str = "",
         optimize_every_commits: int = 50,
         cleanup_older_than_days: int = 7,
         maintenance_enabled: bool = True,
     ) -> None:
         self.hermes_home = Path(hermes_home).expanduser()
-        self.db_path = self.hermes_home / "lancedb"
+        self.store_path = store_path
+        self.db_path = Path(store_path).expanduser() if store_path else self.hermes_home / "lancedb"
         self.embedder = embedder
         self._db = None
         self._table = None
