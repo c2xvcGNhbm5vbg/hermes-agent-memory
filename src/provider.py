@@ -62,6 +62,7 @@ class LanceDBMemoryProvider(MemoryProvider):
             self._store = LanceDBStore(
                 self._resolve_hermes_home(),
                 self._get_embedder(),
+                store_path=str(self._config.get("store_path") or ""),
                 optimize_every_commits=int(maint.get("optimize_every_commits", 50)),
                 cleanup_older_than_days=int(maint.get("cleanup_older_than_days", 7)),
                 maintenance_enabled=bool(maint.get("enabled", True)),
