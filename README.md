@@ -11,6 +11,9 @@ This fork (`c2xvcGNhbm5vbg/hermes-agent-memory`) carries a few changes on top of
 - **Dependency floors relaxed to match Hermes core pins** — `openai>=2.24.0`, `requests>=2.31`, `botocore>=1.31.57`. Upstream's stricter floors made the plugin unresolvable against Hermes core's pins, so plugin management auto-disabled it.
 - **Extraction fix** — the automatic session-end / pre-compress fact extraction now passes `response_format` via `extra_body` (Hermes' `call_llm()` has no top-level `response_format` kwarg) and parses the response with the same helper the rest of Hermes uses. Previously the extraction call raised a `TypeError` that a broad `except` silently swallowed, so automatic extraction never ran.
 - **Profile workspace buckets** — memory is scoped into named *buckets* per Hermes profile: each profile writes to one bucket and reads a union of buckets, so e.g. coding profiles can share a `dev` bucket while the default profile reads everything. See [Workspaces (profile buckets)](#workspaces-profile-buckets).
+- **Shared store across profiles (`store_path`)** — by default each profile has its *own* LanceDB store, so buckets only worked within a single profile. `plugins.lancedb.store_path` points every profile at one shared store, which is what makes cross-profile shared buckets and read-unions work. Empty (the default) keeps the per-profile behavior — fully backward compatible. See [Shared store across profiles](#shared-store-across-profiles-store_path).
+- **IVF_PQ vector index** — the vector leg of recall is indexed (built once, ~ms at any scale) instead of a brute-force scan of every row (linear in row count). Disable with `vector_index_enabled: false`. See [Performance / vector index](#performance--vector-index).
+- **Resilient writer thread** — a failed write batch is logged and dropped instead of killing the background writer thread. Previously one failed batch (e.g. an embedder 500) killed the thread and *all* subsequent memory writes were silently dropped until the Hermes process restarted.
 
 > **Just want to install it?** Jump straight to **[Installation (users)](#installation-users)** — about five minutes, and you can try it in an isolated profile that won't touch your existing Hermes setup.
 
@@ -282,6 +285,33 @@ plugins:
 ### Performance / vector index
 
 Without an index, the vector leg of recall is a brute-force scan of every row (linear in row count — measured ~3 ms @ 1k rows, ~380 ms @ 100k, ~2 s @ 500k). The plugin builds an IVF_PQ index on the `vector` column at first open (built once, guarded by `list_indices()`), so vector recall stays ~ms at any scale. Set `plugins.lancedb.vector_index_enabled: false` to disable the index and fall back to the brute-force scan.
+
+## Agent setup guide: shared buckets
+
+Follow this to configure profile buckets for a user. The model: each profile **writes** to exactly one bucket and **reads** a union of buckets; `read: all` = no filter (sees every bucket). Buckets are *emergent* — a bucket exists only when a profile references it; there is nothing to "create" and no code change is needed to add one.
+
+1. **Decide the buckets.** Ask which profiles should share what. The common shape: a `shared` bucket for general/default memory, and a topic bucket (e.g. `dev`) shared by the coding profiles. Keep the set small — every extra bucket is a new thing to reason about.
+2. **List the profiles.** `ls ~/.hermes/profiles/` (plus the implicit `default` profile). Only the profiles that *use* lancedb need entries (a profile with no `memory:` section doesn't use it).
+3. **Write the `workspaces` block** under `plugins.lancedb` in `~/.hermes/config.yaml`:
+   ```yaml
+   plugins:
+     lancedb:
+       store_path: ~/.hermes/lancedb   # all profiles share ONE store (required for cross-profile sharing)
+       workspaces:
+         enabled: true
+         profiles:
+           default:
+             write: shared
+             read: all
+           ops:
+             write: dev
+             read: [dev, shared]
+   ```
+   `store_path` is what makes the buckets work *across* profiles — without it each profile has its own store and a `read: all` union only sees that profile's own table. `~` is expanded.
+4. **Migrate existing rows** (only if the store already has rows). `python scripts/migrate_workspaces.py --db <store dir> --dry-run` first, then without `--dry-run`. Default mapping: `"" -> shared`, `"hermes" -> shared`. Idempotent.
+5. **Verify with a round-trip.** In a profile that writes to a bucket, remember a fact, then in a *different* profile whose read-union includes that bucket, recall it. If the second profile finds it, the shared store + buckets are working.
+
+**Tuning:** add a new bucket by just referencing it in a profile's `write`/`read` — no code change. Unmapped profiles inherit the `default` profile's entry (if `default` is itself unmapped, the fallback is no scoping). `workspaces.enabled: false` is the escape hatch back to the legacy no-filter behavior.
 
 ---
 
