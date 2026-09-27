@@ -140,7 +140,12 @@ class LanceDBMemoryProvider(MemoryProvider):
                 )
                 if not rows:
                     rows = self.recall(query, mode="hybrid", kind="turn", limit=3)
-                formatted = format_prefetch(rows)
+                prefetch_cfg = self._config.get("prefetch", {}) or {}
+                formatted = format_prefetch(
+                    rows,
+                    max_items=int(prefetch_cfg.get("max_items", 5)),
+                    max_chars=int(prefetch_cfg.get("max_chars", 500)),
+                )
                 if formatted:
                     with self._prefetch_lock:
                         self._prefetch_result = formatted

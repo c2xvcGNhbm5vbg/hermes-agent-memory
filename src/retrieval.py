@@ -149,15 +149,17 @@ def recall(
         return []
 
 
-def format_prefetch(rows: list[dict[str, Any]], *, max_items: int = 5) -> str:
+def format_prefetch(
+    rows: list[dict[str, Any]], *, max_items: int = 5, max_chars: int = 500
+) -> str:
     if not rows:
         return ""
     lines = ["## LanceDB Memory"]
     for row in rows[:max_items]:
         content = row.get("abstract") or row.get("content") or ""
         content = " ".join(str(content).split())
-        if len(content) > 500:
-            content = content[:497] + "..."
+        if len(content) > max_chars:
+            content = content[: max_chars - 3] + "..."
         category = row.get("category") or row.get("kind") or "memory"
         lines.append(f"- ({category}, id={row.get('id')}) {content}")
     return "\n".join(lines)

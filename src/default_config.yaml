@@ -54,6 +54,12 @@ plugins:
         model: cross-encoder/ettin-reranker-17m-v1   # cross-encoder only
         rerank_top_n: 50        # cross-encoder only: candidate pool size (>= top_k)
 
+    prefetch:
+      # Bounds for the memory block auto-injected at the start of each turn:
+      # max_items = most rows injected, max_chars = per-row char cap (truncated with "...").
+      max_items: 5
+      max_chars: 500
+
     extraction:
       enabled: true             # set false to disable LLM fact extraction at session boundaries
       min_turns: 3              # skip extraction for very short sessions

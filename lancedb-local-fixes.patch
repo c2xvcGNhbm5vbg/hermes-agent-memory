@@ -1,0 +1,151 @@
+diff --git a/pyproject.toml b/pyproject.toml
+index ee3ebfb..300c5af 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -11,8 +11,8 @@ authors = [
+ dependencies = [
+     "lancedb>=0.33.0",
+     "pyyaml",
+-    "openai>=2.38.0",
+-    "requests>=2.34.2",
++    "openai>=2.24.0",
++    "requests>=2.31",
+     "botocore>=1.43.16",
+ ]
+ 
+diff --git a/src/extraction.py b/src/extraction.py
+index 602ca1b..1b717cd 100644
+--- a/src/extraction.py
++++ b/src/extraction.py
+@@ -38,7 +38,7 @@ def extract(messages: List[Dict[str, Any]], context: Dict[str, Any] | None = Non
+     if not messages:
+         return []
+     try:
+-        from agent.auxiliary_client import call_llm
++        from agent.auxiliary_client import call_llm, extract_content_or_reasoning
+     except Exception as exc:
+         logger.debug("auxiliary client unavailable for lancedb extraction: %s", exc)
+         return []
+@@ -50,16 +50,22 @@ def extract(messages: List[Dict[str, Any]], context: Dict[str, Any] | None = Non
+                 {"role": "system", "content": EXTRACTION_SYSTEM},
+                 {"role": "user", "content": format_messages_with_indexes(messages)},
+             ],
+-            response_format={"type": "json_object"},
++            # call_llm() has no top-level response_format kwarg, only
++            # extra_body — passing it directly raises TypeError, which the
++            # except-clause below was silently swallowing, so extraction
++            # never actually ran.
++            extra_body={"response_format": {"type": "json_object"}},
+             timeout=30,
+         )
+     except Exception as exc:
+         logger.debug("lancedb extraction call failed: %s", exc)
+         return []
+ 
+-    text = getattr(response, "content", response)
+-    if not isinstance(text, str):
+-        text = str(text)
++    # call_llm() returns the raw response object (.choices[0].message.content),
++    # not something with a top-level .content attribute — use the same helper
++    # every other Hermes caller uses to pull text out (also handles
++    # reasoning-model content=None fallback).
++    text = extract_content_or_reasoning(response).strip()
+     try:
+         payload = json.loads(text)
+     except Exception as exc:
+diff --git a/tests/test_extraction.py b/tests/test_extraction.py
+new file mode 100644
+index 0000000..891ea1a
+--- /dev/null
++++ b/tests/test_extraction.py
+@@ -0,0 +1,90 @@
++from __future__ import annotations
++
++import importlib.util
++import sys
++import types
++from pathlib import Path
++
++
++def _install_fake_auxiliary_client(call_llm_impl):
++    """Inject a fake agent.auxiliary_client so extraction.py's lazy import
++    resolves offline, without a real Hermes checkout or network call."""
++    agent_pkg = sys.modules.setdefault("agent", types.ModuleType("agent"))
++    aux_mod = types.ModuleType("agent.auxiliary_client")
++    aux_mod.call_llm = call_llm_impl
++    aux_mod.extract_content_or_reasoning = lambda response: response.choices[0].message.content
++    sys.modules["agent.auxiliary_client"] = aux_mod
++    agent_pkg.auxiliary_client = aux_mod
++
++
++def _load_extraction_module():
++    root = Path(__file__).resolve().parents[1]
++    spec = importlib.util.spec_from_file_location(
++        "lancedb_extraction_under_test", root / "src" / "extraction.py"
++    )
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[spec.name] = module
++    assert spec.loader is not None
++    spec.loader.exec_module(module)
++    return module
++
++
++def _fake_response(content: str):
++    message = types.SimpleNamespace(content=content)
++    choice = types.SimpleNamespace(message=message)
++    return types.SimpleNamespace(choices=[choice])
++
++
++def test_extract_passes_response_format_via_extra_body_not_top_level():
++    captured = {}
++
++    def fake_call_llm(**kwargs):
++        captured.update(kwargs)
++        return _fake_response('{"facts": []}')
++
++    _install_fake_auxiliary_client(fake_call_llm)
++    extraction = _load_extraction_module()
++
++    extraction.extract([{"role": "user", "content": "hello"}])
++
++    # call_llm() has no top-level response_format kwarg (only extra_body) --
++    # passing it directly raises TypeError.
++    assert "response_format" not in captured
++    assert captured["extra_body"] == {"response_format": {"type": "json_object"}}
++
++
++def test_extract_parses_choices_message_content():
++    def fake_call_llm(**kwargs):
++        return _fake_response(
++            '{"facts": [{"content": "user likes tea", "category": "preference"}]}'
++        )
++
++    _install_fake_auxiliary_client(fake_call_llm)
++    extraction = _load_extraction_module()
++
++    facts = extraction.extract([{"role": "user", "content": "I love tea"}])
++
++    assert facts == [
++        {
++            "content": "user likes tea",
++            "abstract": "",
++            "category": "preference",
++            "tags": [],
++            "evidence": [],
++        }
++    ]
++
++
++def test_extract_returns_empty_list_when_call_llm_raises():
++    def fake_call_llm(**kwargs):
++        raise TypeError("unexpected keyword argument 'response_format'")
++
++    _install_fake_auxiliary_client(fake_call_llm)
++    extraction = _load_extraction_module()
++
++    assert extraction.extract([{"role": "user", "content": "hello"}]) == []
++
++
++def test_extract_returns_empty_on_no_messages():
++    extraction = _load_extraction_module()
++    assert extraction.extract([]) == []
