@@ -300,7 +300,10 @@ class LanceDBStore:
                 item = None
             if item is None:
                 if batch:
-                    self.add_rows(batch)
+                    try:
+                        self.add_rows(batch)
+                    except Exception as exc:
+                        logger.warning("lancedb writer: batch of %d rows failed (%s); dropping", len(batch), exc)
                     batch = []
                 if self._closed.is_set():
                     return
@@ -308,7 +311,10 @@ class LanceDBStore:
             batch.append(item)
             self._queue.task_done()
             if len(batch) >= 16:
-                self.add_rows(batch)
+                try:
+                    self.add_rows(batch)
+                except Exception as exc:
+                    logger.warning("lancedb writer: batch of %d rows failed (%s); dropping", len(batch), exc)
                 batch = []
 
     def shutdown(self, timeout: float = 5.0) -> None:
@@ -328,7 +334,10 @@ class LanceDBStore:
             if item:
                 leftovers.append(item)
         if leftovers:
-            self.add_rows(leftovers)
+            try:
+                self.add_rows(leftovers)
+            except Exception as exc:
+                logger.warning("lancedb writer: final batch of %d rows failed (%s); dropping", len(leftovers), exc)
 
     def add_rows(self, rows: list[dict[str, Any]]) -> None:
         if not rows:
